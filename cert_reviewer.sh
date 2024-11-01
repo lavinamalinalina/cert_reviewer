@@ -191,24 +191,6 @@ keystore_checker() {
 }
 
 
-
-
-
-
-
-	
-
-
-
-
-
-
-
-
-
- 
-
-
 secrets_list=$(oc get secrets | grep Opaque | awk '{print $1}') 
 
 secret_array=($secrets_list)
