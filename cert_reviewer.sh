@@ -28,7 +28,7 @@ while true; do
 	echo -e "${RED}Нужно авторизоваться!\n ${NC}"
 	read -p $'\nЭто кластер K8S? y\\n\n\n' isKuber
 	if [[ $isKuber == "y" ]]; then
-		read -p $'\nВведи адрес API кластера (например: "")\n\n' SERVER
+		read -p $'\nВведи адрес API кластера\n\n' SERVER
 		kubectl login $SERVER && break
 	elif [[ $isKuber == "n" ]]; then
 		read -p $'\nЗапроси токен в админ консоли в GUI и введи строку подключения далее (выглядит как "oc login --token...")\n' ocLogin
