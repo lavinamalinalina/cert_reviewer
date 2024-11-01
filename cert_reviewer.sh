@@ -21,16 +21,25 @@ while true; do
 done
 mkdir -p "$DIR/cert_checker_logs"
 DIR="$DIR/cert_checker_logs"
-read -p "
-Введи токен
 
-" TOKEN
-read -p "
-Введи сервер
 
-" SERVER
 
-#текущий таймстемп
+while true; do
+	echo -e "${RED}Нужно авторизоваться!\n ${NC}"
+	read -p $'\nЭто кластер K8S? y\\n\n\n' isKuber
+	if [[ $isKuber == "y" ]]; then
+		read -p $'\nВведи адрес API кластера (например: "")\n\n' SERVER
+		kubectl login $SERVER && break
+	elif [[ $isKuber == "n" ]]; then
+		read -p $'\nЗапроси токен в админ консоли в GUI и введи строку подключения далее (выглядит как "oc login --token...")\n' ocLogin
+		$ocLogin && break
+	fi
+done		
+
+
+
+
+
 NOW=$(date -d "$(date "+%Y-%m-%d %H:%M")"  "+%s")
 
 echo -e "${YELLOW}Очистка директории $DIR${NC}"
@@ -39,10 +48,10 @@ echo -e "${GREEN}Очистка завершена${NC}"
 
 
 
-# oc login --token=$TOKEN --server=$SERVER || exit 1
- oc login --token=$TOKEN --server=$SERVER || exit 1
+
+
  while true; do
-	 echo -e "${RED}Напиши название проекта${NC}
+	 echo -e "${RED}Напиши название неймспейса${NC}
 "	 
 	 read -e  project
 	 oc project $project
@@ -55,10 +64,10 @@ echo -e "${GREEN}Очистка завершена${NC}"
 ${GREEN}                      ---  Проверяется проект $project  ---${NC}
 " | tee -a "${DIR}/cert_check_log.txt"
 
-echo -e "${PURPLE}Введи дефолтный пароль сикретов твоей системы ${NC}"
-read -e secrets_pass_input_default
-secret_pass=($secrets_pass_input_default)
-
+echo -e "${PURPLE}Введи все возможные пароли от кейсторов и трастсторов в твоём неймспейсе ЧЕРЕЗ ПРОБЕЛ.
+По умолчанию будет использоваться самый первый.${NC}"
+read -e -a secrets_pass_input_default
+secret_pass=${secrets_pass_input_default[0]}
 
 #функция для вычисления оставшихся дней из полученных через keytool сроков действия	
 timestamp_calc() {
@@ -66,12 +75,14 @@ timestamp_calc() {
 	local timestamp=$(date -d "$input_date" "+%s")
 #Переводим разницу в секундах в дни
 	local days_left=$((("$timestamp-$NOW")/86400))
+	cnLen=${#CN}
+	spaceCount=$(echo $((40 - $cnLen)))
 	if [ "$days_left" -gt 40 ]; then
-		echo -e "${GREEN} "$CN"          Осталось $days_left дней ${NC}" | tee -a "${DIR}/cert_check_log.txt"	
+		echo -en "${GREEN} "$CN"" && perl -e "print ' ' x $spaceCount" && echo -e "Осталось $days_left дней ${NC}" | tee -a "${DIR}/cert_check_log.txt"	
 	elif [ "$days_left" -lt 40 ] && [ "$days_left" -gt 14 ]; then
-		echo -e "${YELLOW} "$CN"         Осталось $days_left дней ${NC}" | tee -a "${DIR}/cert_check_log.txt"	
+		echo -en "${YELLOW} "$CN"" && perl -e "print ' ' x $spaceCount" && echo -e "Осталось $days_left дней ${NC}" | tee -a "${DIR}/cert_check_log.txt"	
 	elif [ "$days_left" -lt 14 ] && [[ "$input_date" != '' ]]; then
-		echo -e  "${RED} "$CN"    ---ВНИМАНИЕ!!!  Осталось $days_left дней   ВНИМАНИЕ!!!---${NC}" | tee -a "${DIR}/cert_check_log.txt"	
+		echo -en  "${RED} "$CN""$spacebars"" && perl -e "print ' ' x $spaceCount" && echo -e "---ВНИМАНИЕ!!!  Осталось $days_left дней   ВНИМАНИЕ!!!---${NC}" | tee -a "${DIR}/cert_check_log.txt"	
 	else
 		echo -e "${RED}Файл: $secret_file пропущен, проверьте его вручную! ${CN}" | tee -a "${DIR}/cert_check_log.txt" | tee -a "${DIR}/cert_check_log.txt"
 	fi	
@@ -93,15 +104,20 @@ timestamp_calc() {
 #функция проверки типа кейстора
 type_checker() {
 	oc get secret $secret -o json | jq  '.data."'"$secret_file"'"' |  base64 -di > "${DIR}/${secret}/${secret_file}"
-	echo -e "${PURPLE} Проверяется keystore: $secret_file в $secret ${NC}" | tee -a "${DIR}/cert_check_log.txt"
 	cd ${DIR}/${secret}
-	keytool -list -v -keystore $secret_file -storetype PKCS12 -storepass "$secret_pass" > /dev/null 2>&1 
+	type_index="-storetype PKCS12"
+	keytool -list -v -keystore $secret_file $type_index -storepass "$secret_pass" > /dev/null 2>&1 
 	type_trigger=$(echo $?)
-	if [ $type_trigger -eq 0 ]; then
-		type_index='-storetype PKCS12'
-	else 	
-		type_index=""
-	fi	
+	type_list=( "-storetype PFX" "-storetype PKCS11" "-storetype JKS" "-storetype pkcs12"  "")
+	if [ $type_trigger -eq 1 ]; then
+		for type_index in "${type_list[@]}"; do
+			keytool -list -v -keystore $secret_file $type_index -storepass "$secret_pass" > /dev/null 2>&1 
+			type_trigger=$(echo $?)
+			if [ $type_trigger -eq 0 ]; then
+				break	
+			fi
+		done
+	fi
 }
 
 
@@ -109,27 +125,41 @@ type_checker() {
 
 #функция проверки кейсторов
 keystore_checker() {
+	echo -e "${PURPLE} Проверяется keystore: $secret_file в $secret ${NC}" | tee -a "${DIR}/cert_check_log.txt"
 	secret_pass=($secrets_pass_input_default)
 	index=0
 	type_checker
 	keytool -list -v -keystore $secret_file $type_index -storepass "$secret_pass" > /dev/null 2>&1 
 	trigger=$(echo $?)
+	if [ $trigger -eq 1 ]; then
+		for secret_pass in  "${secrets_pass_input_default[@]}"; do
+			keytool -list -v -keystore $secret_file $type_index -storepass "$secret_pass" > /dev/null 2>&1 
+			trigger=$(echo $?)
+			if [ $trigger -eq 0 ]; then
+				break
+			fi
+		done
+	fi
 	while [ $trigger  -eq 1 ]; do		
 		  	echo -e "${RED}Пароль не подошёл, введи пароль от $secret_file в $secret  ${NC}" | tee -a "${DIR}/cert_check_log.txt"
 		  	read -e -r secrets_pass_input_manual
 		  	secret_pass=($secrets_pass_input_manual) 
+			type_checker
 			if [[ $secrets_pass_input_manual  == 'skip'   ||   $secrets_pass_input_manual  == "s" ]]; then
 				break
-			else
+			else			
 				
-#вызов функциипроверки на тип
+				secrets_pass_input_default+=("$secrets_pass_input_manual")
+#вызов функции проверки на тип
 				type_checker
 		  		keytool -list -v -keystore $secret_file $type_index -storepass "$secret_pass" > /dev/null 2>&1
 				trigger=$(echo $?)	
 			
 			fi
 	done
-	
+	if [[ $secret_pass != 'skip' &&  $secret_pass != "s" ]]; then
+		echo "Подошёл пароль: $secret_pass"
+	fi
 		
 
 #Перебираем все valid даты кейстора
@@ -179,8 +209,7 @@ keystore_checker() {
  
 
 
-#превращаем переносы строк в пробелы, чтобы изи переделать лист в массив
-secrets_list=`oc get secrets | grep Opaque | awk '{print $1}' | tr '\n' ' '` 
+secrets_list=$(oc get secrets | grep Opaque | awk '{print $1}') 
 
 secret_array=($secrets_list)
 
